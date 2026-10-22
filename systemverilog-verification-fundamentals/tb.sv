@@ -15,17 +15,37 @@ interface fifo_if #(
 endinterface
 
 class fifo_trans #(parameter DATA_WIDTH = 8);
-  bit wr_en, rd_en, parity;
-  bit [DATA_WIDTH-1:0] din;
+  rand bit wr_en, rd_en;
+  bit parity;
+  rand bit [DATA_WIDTH-1:0] din;
   logic [DATA_WIDTH-1:0] dout;
   
-  function new(bit [DATA_WIDTH-1:0] din, bit wr_en, bit rd_en);
+  constraint c_rw_dist{
+    wr_en dist {1'b0:=30, 1'b1:=70};
+    rd_en dist {1'b0:=70, 1'b1:=30};
+  }
+
+  constraint c_data_dist{
+    din dist {
+      8'h00:=20,
+      8'hFF:=20,
+      [8'h01:8'hFE]:/60
+    };
+  }
+
+
+  function new(bit [DATA_WIDTH-1:0] din = 0, bit wr_en = 0, bit rd_en = 0);
     this.din = din;
     this.wr_en = wr_en;
     this.rd_en = rd_en;
     this.dout = 0;
     this.parity = ^din;
   endfunction
+
+  function void post_randomize();
+    parity = calc_parity();
+  endfunction
+
 
   virtual function bit calc_parity();
     return ^din;  
@@ -65,6 +85,7 @@ module tb();
   
   bit [DATA_WIDTH-1:0] expected_q[$];
   bit [DATA_WIDTH-1:0] expected_dout;
+  bit isRead;
   int error_count = 0;
   int pass_count = 0;
   bit expected_full;
@@ -89,16 +110,33 @@ module tb();
   always @(posedge clk) begin
     if(!vif.rst_n) begin
       expected_q.delete();
-      expected_dout = 0;
+      expected_dout <= 0;
+      isRead <= 0;
     end else begin
+      if(isRead) begin
+        if(vif.drv_cb.dout === expected_dout) begin
+          pass_count++;
+          $display("[PASS] Time=%0t | dout=%0d matches expected_dout=0x%0h", 
+          $time, vif.drv_cb.dout, expected_dout);
+        end else begin
+          error_count++;
+          $error("[FAIL] Time=%0t | dout=%0d != expected_dout=0x%0h",
+          $time, vif.drv_cb.dout, expected_dout);
+        end
+      end
+
       expected_full = (expected_q.size() == DEPTH);
       expected_empty = (expected_q.size() == 0);
+
       if(vif.wr_en && !expected_full) begin
         expected_q.push_back(vif.din);
       end
       
       if(vif.rd_en && !expected_empty) begin
         expected_dout <= expected_q.pop_front();
+        isRead <= 1;
+      end else begin
+        isRead <= 0;
       end
     end
   end
@@ -123,41 +161,25 @@ module tb();
     
     repeat (2) @(vif.drv_cb);
     vif.drv_cb.rst_n <= 1'b1;
+    tr1 = new();
     
-    $display("\nOOP TEST A: DEEP COPY (copy)");
-    tr1 = new(8'hA5, 1'b1, 1'b0);
-    tr2 = tr1.copy();
-    tr2.din = 8'hFF;
-    tr1.display("ORIG");
-    tr2.display("CLONE");
-
-    $display("\nOOP TEST B: POLYMORPHISM (pass bad_tr into drive_trans)");
-    bad_tr = new(8'h55, 1'b0, 1'b0);
-    drive_trans(bad_tr);
-
-    $display("FIFO TEST 1: Burst Writing using Transaction Objects");
-    for(int i=0; i<DEPTH+2;i++) begin
-      tr1 = new(i, 1'b1, 1'b0);
+    $display("\nPHASE 1: 50 random transactions");
+    for(int i=0; i<50; i++) begin
+      assert(tr1.randomize()) else $error("Randomization failed");
       drive_trans(tr1);
     end
+
+    $display("PHASE 2: Read using constraint with { }");
+    for(int i=0; i<DEPTH; i++) begin
+      assert(tr1.randomize() with { wr_en == 1'b0; rd_en == 1'b1; }) 
+      else $error("Randomization failed");
+      drive_trans(tr1);
+    end
+
     @(vif.drv_cb);
     vif.drv_cb.wr_en <= 1'b0;
-
-    $display("FIFO TEST 2: Read and Check");
-    for(int i=0; i<DEPTH+2;i++) begin
-      @(vif.drv_cb);
-      vif.drv_cb.rd_en <= 1'b1;
-      @(vif.drv_cb);
-      vif.drv_cb.rd_en <= 1'b0;
-      @(vif.drv_cb);
-      if(vif.drv_cb.dout === expected_dout) begin
-        pass_count++;
-        $display("[PASS] Time=%0t | dout=%0d matches expected_dout=%0d", $time, vif.drv_cb.dout, expected_dout);
-      end else begin
-        error_count++;
-        $error("[FAIL] Time=%0t | dout=%0d != expected_dout=%0d", $time, vif.drv_cb.dout, expected_dout);
-      end
-    end
+    vif.drv_cb.rd_en <= 1'b0;
+    repeat (2) @(vif.drv_cb);
 
     $display("========================================");
     $display(" TEST SUMMARY: PASS=%0d | ERRORS=%0d", pass_count, error_count);
