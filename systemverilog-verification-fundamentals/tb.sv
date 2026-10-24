@@ -82,6 +82,7 @@ module tb();
   localparam DATA_WIDTH = 8;
   localparam DEPTH = 16;
   fifo_if #(DATA_WIDTH) vif(clk);
+  mailbox #(fifo_trans #(DATA_WIDTH)) gen2drv_mbox;
   
   bit [DATA_WIDTH-1:0] expected_q[$];
   bit [DATA_WIDTH-1:0] expected_dout;
@@ -116,11 +117,11 @@ module tb();
       if(isRead) begin
         if(vif.drv_cb.dout === expected_dout) begin
           pass_count++;
-          $display("[PASS] Time=%0t | dout=%0d matches expected_dout=0x%0h", 
+          $display("[PASS] Time=%0t | dout=0x%0h matches expected_dout=0x%0h", 
           $time, vif.drv_cb.dout, expected_dout);
         end else begin
           error_count++;
-          $error("[FAIL] Time=%0t | dout=%0d != expected_dout=0x%0h",
+          $error("[FAIL] Time=%0t | dout=0x%0h != expected_dout=0x%0h",
           $time, vif.drv_cb.dout, expected_dout);
         end
       end
@@ -141,6 +142,35 @@ module tb();
     end
   end
 
+  task generator(int num);
+    fifo_trans #(DATA_WIDTH) tr;
+    for(int i=0; i<num; i++) begin
+      tr = new();
+      assert(tr.randomize()) else $error("Randomization failed");
+      gen2drv_mbox.put(tr);
+      tr.display("GENERATOR");
+    end
+
+    for(int i=0; i<DEPTH; i++) begin
+      tr = new();
+      assert(tr.randomize() with { wr_en == 1'b0; rd_en == 1'b1; }) 
+      else $error("Randomization failed");
+      gen2drv_mbox.put(tr);
+    end
+  endtask
+
+  task driver(int total);
+    fifo_trans #(DATA_WIDTH) tr;
+    for(int i=0; i<total; i++) begin
+      gen2drv_mbox.get(tr);
+      drive_trans(tr);
+    end
+
+    @(vif.drv_cb);
+    vif.drv_cb.wr_en <= 1'b0;
+    vif.drv_cb.rd_en <= 1'b0;
+  endtask
+
   task drive_trans(fifo_trans #(DATA_WIDTH) t);
     @(vif.drv_cb);
     vif.drv_cb.wr_en <= t.wr_en;
@@ -148,11 +178,9 @@ module tb();
     vif.drv_cb.din <= t.din;
     t.display("DRIVE_TRANS");
   endtask
-  
-  fifo_trans #(DATA_WIDTH) tr1, tr2;
-  bad_parity_trans #(DATA_WIDTH) bad_tr;
 
   initial begin
+    gen2drv_mbox = new();
     clk = 1'b0;
     vif.rst_n = 1'b0;
     vif.wr_en = 1'b0;
@@ -161,24 +189,22 @@ module tb();
     
     repeat (2) @(vif.drv_cb);
     vif.drv_cb.rst_n <= 1'b1;
-    tr1 = new();
     
-    $display("\nPHASE 1: 50 random transactions");
-    for(int i=0; i<50; i++) begin
-      assert(tr1.randomize()) else $error("Randomization failed");
-      drive_trans(tr1);
-    end
+    $display("\nStart generator and driver with watchdog");
+    fork
+      begin
+        fork
+          generator(50);
+          driver(50+DEPTH);
+        join
+      end
+      begin
+        #10000;
+        $fatal("[WATCHDOG TIMEOUT] Simulation hang for > 10000ns");
+      end
+    join_any
+    disable fork;
 
-    $display("PHASE 2: Read using constraint with { }");
-    for(int i=0; i<DEPTH; i++) begin
-      assert(tr1.randomize() with { wr_en == 1'b0; rd_en == 1'b1; }) 
-      else $error("Randomization failed");
-      drive_trans(tr1);
-    end
-
-    @(vif.drv_cb);
-    vif.drv_cb.wr_en <= 1'b0;
-    vif.drv_cb.rd_en <= 1'b0;
     repeat (2) @(vif.drv_cb);
 
     $display("========================================");

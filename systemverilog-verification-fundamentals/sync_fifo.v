@@ -28,12 +28,12 @@ module sync_fifo #(
         end else begin
             if (wr_en && !full) begin
                 fifo_mem[wr_ptr[PTR_WIDTH-1:0]] <= din;
-                wr_ptr = wr_ptr + 1;
+                wr_ptr <= wr_ptr + 1;
             end
             
             if (rd_en && !empty) begin
                 dout <= fifo_mem[rd_ptr[PTR_WIDTH-1:0]];
-                rd_ptr = rd_ptr + 1;
+                rd_ptr <= rd_ptr + 1;
             end
         end
     end
