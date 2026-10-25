@@ -179,8 +179,38 @@ module tb();
     t.display("DRIVE_TRANS");
   endtask
 
+  property p_reset_state;
+    @(posedge clk) (!vif.rst_n) |=> (!vif.full && vif.empty);
+  endproperty
+  AST_RESET: assert property(p_reset_state)
+  else $error("[SVA FAIL] Reset state violated!");
+
+  AST_MUTEX: assert property(@(posedge clk) disable iff(!vif.rst_n) vif.full |-> !vif.empty)
+  else $error("[SVA FAIL] FIFO is both full and empty simultaneously!");
+
+  AST_WR_NOT_EMPTY: assert property(@(posedge clk) disable iff(!vif.rst_n) 
+  (vif.wr_en && !vif.full) |=> !vif.empty)
+  else $error("[SVA FAIL] FIFO is empty after a write operation!");
+
+  covergroup fifo_cg @(posedge clk);
+    option.per_instance = 1;
+    cp_wr: coverpoint vif.wr_en;
+    cp_rd: coverpoint vif.rd_en;
+    cp_full: coverpoint vif.full;
+    cp_empty: coverpoint vif.empty;
+    cp_din: coverpoint vif.din{
+      bins corner_min = {8'h00};
+      bins corner_max = {8'hFF};
+      bins mid = {[8'h01:8'hFE]};
+    }
+    cross_rw: cross cp_wr, cp_rd;
+  endgroup
+
+  fifo_cg cg_inst;
+
   initial begin
     gen2drv_mbox = new();
+    cg_inst = new();
     clk = 1'b0;
     vif.rst_n = 1'b0;
     vif.wr_en = 1'b0;
@@ -194,8 +224,8 @@ module tb();
     fork
       begin
         fork
-          generator(50);
-          driver(50+DEPTH);
+          generator(100);
+          driver(100+DEPTH);
         join
       end
       begin
@@ -209,6 +239,7 @@ module tb();
 
     $display("========================================");
     $display(" TEST SUMMARY: PASS=%0d | ERRORS=%0d", pass_count, error_count);
+    $display("FUNCTIONAL COVERAGE: %0.2f%%", cg_inst.get_inst_coverage());
     $display("========================================");
     $finish;
   end
